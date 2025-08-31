@@ -1,0 +1,44 @@
+{
+  "project_info": {
+    "project_number": "169904244919",
+    "firebase_url": "https://kinkup-33cb4.firebaseio.com",
+    "project_id": "kinkup-33cb4",
+    "storage_bucket": "kinkup-33cb4.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:169904244919:android:9587294a650c51e04ea532",
+        "android_client_info": {
+          "package_name": "com.craftflowtechnologies.guidelens"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "169904244919-h72o96c00kl3r713rdbn1t66mvgh1dil.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.craftflowtechnologies.guidelens",
+            "certificate_hash": "abd7e4475685cfcda96bacb66f306251cd0e668b"
+          }
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAO0Qv9RTNXCzL2hcvcUBIGqt1nFQnPWNE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "169904244919-jefirqp42ugme28r8rm1kup99v09cqnl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
