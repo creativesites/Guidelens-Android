@@ -81,14 +81,14 @@ private fun EnhancedMessageElement(
     onInstructionToggle: ((Int, Boolean) -> Unit)?,
     animationDelay: Long = 0L
 ) {
-    var isVisible by remember { mutableStateOf(false) }
+    var isVisible by remember { mutableStateOf(true) } // Show immediately for testing
 
-//    LaunchedEffect(element) {
-//        delay(animationDelay)
-//        isVisible = true
-//    }
+    LaunchedEffect(element) {
+        delay(animationDelay)
+        isVisible = true
+    }
 
-    // Simply show/hide without animation
+    // Show content
     if (isVisible) {
         when (element) {
             is MessageElement.Text -> TextElementRenderer(element)

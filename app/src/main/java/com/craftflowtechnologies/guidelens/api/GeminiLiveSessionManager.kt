@@ -15,6 +15,10 @@ import java.util.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.ui.graphics.Color
+import com.craftflowtechnologies.guidelens.audio.RealTimeAudioManager
+import com.craftflowtechnologies.guidelens.audio.AudioCapabilities
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.BufferOverflow
 
 /**
  * Enhanced Gemini Live Session Manager for real-time video/audio interactions
@@ -24,6 +28,11 @@ class GeminiLiveSessionManager(
     private val context: Context,
     private val geminiLiveClient: GeminiLiveApiClient
 ) : ViewModel() {
+    
+    // Audio Manager for real-time audio processing
+    private val audioManager: RealTimeAudioManager by lazy {
+        RealTimeAudioManager(context)
+    }
     
     private val _sessionState = MutableStateFlow<SessionState>(SessionState.DISCONNECTED)
     val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
@@ -46,8 +55,25 @@ class GeminiLiveSessionManager(
     private val _processingQueue = MutableStateFlow(0)
     val processingQueue: StateFlow<Int> = _processingQueue.asStateFlow()
     
+    // Audio streaming state flows
+    private val _audioChunks = MutableSharedFlow<ByteArray>(
+        extraBufferCapacity = 10,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val audioChunks: SharedFlow<ByteArray> = _audioChunks.asSharedFlow()
+    
+    private val _audioLevel = MutableStateFlow(0f)
+    val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
+    
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+    
+    private val _isPlayingAudio = MutableStateFlow(false)
+    val isPlayingAudio: StateFlow<Boolean> = _isPlayingAudio.asStateFlow()
+    
     private var frameProcessingJob: Job? = null
     private var audioProcessingJob: Job? = null
+    private var audioStreamingJob: Job? = null
     
     init {
         // Observe Gemini Live API responses
@@ -66,6 +92,27 @@ class GeminiLiveSessionManager(
                     GeminiLiveApiClient.ConnectionState.Connected -> SessionState.CONNECTED
                     GeminiLiveApiClient.ConnectionState.Error -> SessionState.DISCONNECTING
                 }
+            }
+        }
+        
+        // Observe audio level from audio manager
+        viewModelScope.launch {
+            audioManager.audioLevel.collect { level ->
+                _audioLevel.value = level
+            }
+        }
+        
+        // Observe recording state
+        viewModelScope.launch {
+            audioManager.isRecording.collect { recording ->
+                _isRecording.value = recording
+            }
+        }
+        
+        // Observe audio playback state
+        viewModelScope.launch {
+            audioManager.isPlaying.collect { playing ->
+                _isPlayingAudio.value = playing
             }
         }
     }
@@ -90,8 +137,19 @@ class GeminiLiveSessionManager(
                 _sessionState.value = SessionState.CONNECTED
                 Log.d("LiveSessionManager", "Live session started successfully")
                 
+                // Initialize audio components
+                val audioInitialized = audioManager.initializeAudio()
+                if (!audioInitialized) {
+                    Log.w("LiveSessionManager", "Audio initialization failed, text-only mode")
+                }
+                
                 // Start periodic frame processing for real-time analysis
                 startFrameProcessing()
+                
+                // Start audio streaming if initialized
+                if (audioInitialized) {
+                    startAudioStreaming()
+                }
             } else {
                 _sessionState.value = SessionState.DISCONNECTED
                 Log.e("LiveSessionManager", "Failed to start live session")
@@ -112,6 +170,12 @@ class GeminiLiveSessionManager(
             // Stop processing jobs
             frameProcessingJob?.cancel()
             audioProcessingJob?.cancel()
+            audioStreamingJob?.cancel()
+            
+            // Stop audio manager
+            audioManager.stopRecording()
+            audioManager.stopPlayback()
+            audioManager.cleanup()
             
             // Disconnect from API
             geminiLiveClient.disconnect()
@@ -122,6 +186,9 @@ class GeminiLiveSessionManager(
             _emotionalContext.value = EmotionalContext.NEUTRAL
             _isProcessing.value = false
             _processingQueue.value = 0
+            _isRecording.value = false
+            _isPlayingAudio.value = false
+            _audioLevel.value = 0f
             
             Log.d("LiveSessionManager", "Live session stopped")
         } catch (e: Exception) {
@@ -195,6 +262,16 @@ class GeminiLiveSessionManager(
         }
     }
     
+    fun startAudioInput(): Boolean {
+        return if (_sessionState.value == SessionState.CONNECTED) {
+            audioManager.startRecording()
+        } else false
+    }
+    
+    fun stopAudioInput() {
+        audioManager.stopRecording()
+    }
+    
     fun sendAudioData(audioData: ByteArray) {
         if (_sessionState.value == SessionState.CONNECTED) {
             geminiLiveClient.sendAudioData(audioData, "audio/pcm")
@@ -221,14 +298,41 @@ class GeminiLiveSessionManager(
         }
     }
     
+    private fun startAudioStreaming() {
+        audioStreamingJob = viewModelScope.launch {
+            // Stream audio chunks from microphone to Gemini Live API
+            audioManager.audioChunks.collect { audioChunk ->
+                if (_sessionState.value == SessionState.CONNECTED && !_isPlayingAudio.value) {
+                    try {
+                        geminiLiveClient.sendAudioData(audioChunk, "audio/pcm")
+                        _audioChunks.tryEmit(audioChunk) // Emit for UI visualization
+                        Log.d("LiveSessionManager", "Sent audio chunk: ${audioChunk.size} bytes")
+                    } catch (e: Exception) {
+                        Log.e("LiveSessionManager", "Error sending audio chunk", e)
+                    }
+                }
+            }
+        }
+    }
+    
     private fun handleGeminiResponse(response: GeminiLiveApiClient.GeminiLiveResponse) {
         when (response) {
             is GeminiLiveApiClient.GeminiLiveResponse.TextResponse -> {
                 processTextResponse(response.text)
             }
             is GeminiLiveApiClient.GeminiLiveResponse.AudioResponse -> {
-                // Handle audio response for future audio playback
-                Log.d("LiveSessionManager", "Received audio response: ${response.audioData.size} bytes")
+                // Stop user input while playing AI response
+                stopAudioInput()
+                
+                // Play audio response through AudioTrack
+                viewModelScope.launch {
+                    try {
+                        audioManager.playAudio(response.audioData)
+                        Log.d("LiveSessionManager", "Playing audio response: ${response.audioData.size} bytes")
+                    } catch (e: Exception) {
+                        Log.e("LiveSessionManager", "Error playing audio response", e)
+                    }
+                }
             }
             is GeminiLiveApiClient.GeminiLiveResponse.Error -> {
                 Log.e("LiveSessionManager", "Gemini API error: ${response.message}")
@@ -292,9 +396,26 @@ class GeminiLiveSessionManager(
         """.trimIndent()
     }
     
+    /**
+     * Get audio capabilities of the device
+     */
+    fun getAudioCapabilities(): AudioCapabilities {
+        return audioManager.getAudioCapabilities()
+    }
+    
+    /**
+     * Resume audio input after AI response is complete
+     */
+    fun resumeAudioInput() {
+        if (_sessionState.value == SessionState.CONNECTED && !_isPlayingAudio.value) {
+            startAudioInput()
+        }
+    }
+    
     override fun onCleared() {
         super.onCleared()
         stopLiveSession()
+        audioManager.cleanup()
         geminiLiveClient.cleanup()
     }
 }

@@ -111,10 +111,17 @@ fun EnhancedChatMessagesArea(
 
     Box(modifier = modifier.fillMaxSize()) {
         Column {
-            ChatToolsSection(
+            EnhancedChatToolsSection(
                 selectedAgent = selectedAgent,
                 isDarkTheme = isDarkTheme,
-                onToolClick = onFeatureClick
+                onArtifactRequest = { request ->
+                    // Handle artifact request
+                    onFeatureClick("artifact_${request.type}")
+                },
+                onFeaturePageRequest = { pageId ->
+                    // Handle feature page request  
+                    onFeatureClick("feature_page_$pageId")
+                }
             )
 
             LazyColumn(
@@ -1079,44 +1086,7 @@ fun WelcomeCard(
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Agent avatar with glow effect
-                Box(
-                    modifier = Modifier.size(80.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(80.dp)
-                            .background(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        agent.primaryColor.copy(alpha = 0.3f),
-                                        Color.Transparent
-                                    )
-                                ),
-                                shape = CircleShape
-                            )
-                    )
 
-                    Box(
-                        modifier = Modifier
-                            .size(64.dp)
-                            .background(
-                                brush = Brush.linearGradient(
-                                    colors = listOf(agent.primaryColor, agent.secondaryColor)
-                                ),
-                                shape = CircleShape
-                            )
-                            .shadow(12.dp, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(id = com.craftflowtechnologies.guidelens.R.drawable.general_icon),
-                            contentDescription = agent.name,
-                            modifier = Modifier.size(40.dp)
-                        )
-                    }
-                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 

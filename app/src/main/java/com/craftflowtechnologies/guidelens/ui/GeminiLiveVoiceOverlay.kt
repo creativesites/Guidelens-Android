@@ -34,8 +34,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.craftflowtechnologies.guidelens.api.FirebaseLiveSessionManager
-import com.craftflowtechnologies.guidelens.api.FirebaseSessionState
 import com.craftflowtechnologies.guidelens.api.GeminiLiveSessionManager
 import com.craftflowtechnologies.guidelens.api.GeminiLiveApiClient
 import com.craftflowtechnologies.guidelens.api.SessionState
@@ -69,39 +67,31 @@ fun GeminiLiveVoiceOverlay(
     val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
     
-    // Initialize Firebase AI Logic Live Session Manager (Production Ready)
-    val firebaseLiveSessionManager: FirebaseLiveSessionManager = viewModel {
-        FirebaseLiveSessionManager(context)
-    }
-    
-    // Keep legacy components for fallback
+    // Initialize Gemini Live Session Manager with real audio streaming
     val geminiLiveClient = remember { GeminiLiveApiClient() }
     val liveSessionManager: GeminiLiveSessionManager = viewModel {
         GeminiLiveSessionManager(context, geminiLiveClient)
     }
     
     // State management
-    var isListening by remember { mutableStateOf(false) }
-    var isSpeaking by remember { mutableStateOf(false) }
     var isMicEnabled by remember { mutableStateOf(true) }
     var showControls by remember { mutableStateOf(true) }
     var currentTranscription by remember { mutableStateOf("") }
-    var voiceActivityLevel by remember { mutableStateOf(0f) }
     
-    // Collect state from Firebase Live Session Manager
-    val firebaseSessionState by firebaseLiveSessionManager.sessionState.collectAsState()
-    val firebaseIsListening by firebaseLiveSessionManager.isListening.collectAsState()
-    val firebaseIsSpeaking by firebaseLiveSessionManager.isSpeaking.collectAsState()
-    val firebaseTranscription by firebaseLiveSessionManager.transcription.collectAsState()
-    val firebaseAiResponse by firebaseLiveSessionManager.aiResponse.collectAsState()
-    val firebaseVoiceActivity by firebaseLiveSessionManager.voiceActivityLevel.collectAsState()
-    val firebaseErrorMessage by firebaseLiveSessionManager.errorMessage.collectAsState()
-    
-    // Collect legacy state for fallback
+    // Collect state from Gemini Live Session Manager with real audio streaming
     val sessionState by liveSessionManager.sessionState.collectAsState()
     val aiInsights by liveSessionManager.aiInsights.collectAsState()
     val emotionalContext by liveSessionManager.emotionalContext.collectAsState()
     val isProcessing by liveSessionManager.isProcessing.collectAsState()
+    val isRecording by liveSessionManager.isRecording.collectAsState()
+    val isPlayingAudio by liveSessionManager.isPlayingAudio.collectAsState()
+    val audioLevel by liveSessionManager.audioLevel.collectAsState()
+    val responseTime by liveSessionManager.responseTime.collectAsState()
+    
+    // Derived state for UI
+    val isListening = isRecording
+    val isSpeaking = isPlayingAudio
+    val voiceActivityLevel = audioLevel
     
     // Audio visualization state
     val infiniteTransition = rememberInfiniteTransition()
@@ -129,68 +119,51 @@ fun GeminiLiveVoiceOverlay(
         )
     )
     
-    // Update local state from Firebase session manager
-    LaunchedEffect(firebaseIsListening) {
-        isListening = firebaseIsListening
-    }
-    
-    LaunchedEffect(firebaseIsSpeaking) {
-        isSpeaking = firebaseIsSpeaking
-    }
-    
-    LaunchedEffect(firebaseVoiceActivity) {
-        voiceActivityLevel = firebaseVoiceActivity
-    }
-    
-    LaunchedEffect(firebaseTranscription) {
-        if (firebaseTranscription.isNotEmpty()) {
-            currentTranscription = firebaseTranscription
+    // Handle AI responses from audio streaming
+    LaunchedEffect(aiInsights) {
+        if (aiInsights.isNotEmpty()) {
+            onSendMessage("🎤 AI: $aiInsights")
+            currentTranscription = aiInsights
         }
     }
     
-    LaunchedEffect(firebaseAiResponse) {
-        if (firebaseAiResponse.isNotEmpty()) {
-            onSendMessage("🎤 AI: $firebaseAiResponse")
-        }
-    }
-    
-    // Handle Firebase errors
-    LaunchedEffect(firebaseErrorMessage) {
-        firebaseErrorMessage?.let { error ->
-            onSendMessage("❌ Error: $error")
+    // Auto-resume audio input after AI stops speaking
+    LaunchedEffect(isSpeaking) {
+        if (!isSpeaking && sessionState == SessionState.CONNECTED && isMicEnabled) {
+            delay(500) // Brief pause after AI finishes speaking
+            liveSessionManager.resumeAudioInput()
         }
     }
     
     // Auto-hide controls
     LaunchedEffect(showControls) {
-        if (showControls && firebaseSessionState != FirebaseSessionState.CONNECTED) {
+        if (showControls && sessionState != SessionState.CONNECTED) {
             delay(5000)
             showControls = false
         }
     }
     
-    // Firebase AI Logic session management functions
-    fun startFirebaseLiveSession() {
+    // Gemini Live session management functions with real audio streaming
+    fun startLiveAudioSession() {
         coroutineScope.launch {
             try {
                 onSendMessage("🔄 Initializing AI voice session...")
                 
-                // Initialize Gemini Live with agent-specific configuration
-                val initialized = firebaseLiveSessionManager.initializeGeminiLive(
-                    agentType = selectedAgent.id
+                // Start the live session with agent-specific configuration
+                val sessionStarted = liveSessionManager.startLiveSession(
+                    agentType = selectedAgent.id,
+                    userTier = "pro" // TODO: Get from user preferences
                 )
-                
-                if (!initialized) {
-                    onSendMessage("❌ Failed to initialize AI. Please try again.")
-                    return@launch
-                }
-                
-                // Start the live session
-                val sessionStarted = firebaseLiveSessionManager.startLiveSession()
                 
                 if (sessionStarted) {
                     onSendMessage("🎤 Started live voice session with ${selectedAgent.name}")
                     onSendMessage("💬 Say something to start the conversation!")
+                    
+                    // Start audio input automatically
+                    delay(1000)
+                    if (liveSessionManager.startAudioInput()) {
+                        onSendMessage("🎙️ Microphone is active - listening...")
+                    }
                 } else {
                     onSendMessage("❌ Failed to start voice session. Please check your connection.")
                 }
@@ -200,26 +173,33 @@ fun GeminiLiveVoiceOverlay(
         }
     }
     
-    fun stopFirebaseLiveSession() {
-        coroutineScope.launch {
-            firebaseLiveSessionManager.stopLiveSession()
-            onSendMessage("🔇 Voice session ended")
+    fun stopLiveAudioSession() {
+        liveSessionManager.stopLiveSession()
+        onSendMessage("🔇 Voice session ended")
+    }
+    
+    fun toggleMicrophone() {
+        isMicEnabled = !isMicEnabled
+        if (isMicEnabled && sessionState == SessionState.CONNECTED) {
+            liveSessionManager.startAudioInput()
+        } else {
+            liveSessionManager.stopAudioInput()
         }
     }
     
-    fun toggleFirebaseListening() {
-        when (firebaseSessionState) {
-            FirebaseSessionState.CONNECTED -> {
-                if (firebaseIsListening) {
-                    firebaseLiveSessionManager.stopListening()
+    fun toggleAudioSession() {
+        when (sessionState) {
+            SessionState.CONNECTED -> {
+                if (isListening) {
+                    liveSessionManager.stopAudioInput()
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 } else {
-                    firebaseLiveSessionManager.startListening()
+                    liveSessionManager.startAudioInput()
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 }
             }
-            FirebaseSessionState.DISCONNECTED -> {
-                startFirebaseLiveSession()
+            SessionState.DISCONNECTED -> {
+                startLiveAudioSession()
             }
             else -> {
                 // Session is connecting/processing - show feedback
@@ -246,7 +226,7 @@ fun GeminiLiveVoiceOverlay(
             .fillMaxSize()
             .background(
                 brush = when {
-                    firebaseSessionState == FirebaseSessionState.CONNECTED -> Brush.radialGradient(
+                    sessionState == SessionState.CONNECTED -> Brush.radialGradient(
                         colors = listOf(
                             selectedAgent.primaryColor.copy(alpha = 0.3f),
                             selectedAgent.secondaryColor.copy(alpha = 0.2f),
@@ -254,7 +234,7 @@ fun GeminiLiveVoiceOverlay(
                         ),
                         radius = 800f
                     )
-                    firebaseIsListening -> Brush.radialGradient(
+                    isListening -> Brush.radialGradient(
                         colors = listOf(
                             Color(0xFF10B981).copy(alpha = 0.4f),
                             Color(0xFF059669).copy(alpha = 0.2f),
@@ -262,7 +242,7 @@ fun GeminiLiveVoiceOverlay(
                         ),
                         radius = 600f
                     )
-                    firebaseIsSpeaking -> Brush.radialGradient(
+                    isSpeaking -> Brush.radialGradient(
                         colors = listOf(
                             Color(0xFF3B82F6).copy(alpha = 0.4f),
                             Color(0xFF1E40AF).copy(alpha = 0.2f),
@@ -270,7 +250,7 @@ fun GeminiLiveVoiceOverlay(
                         ),
                         radius = 600f
                     )
-                    firebaseSessionState == FirebaseSessionState.CONNECTING -> Brush.radialGradient(
+                    sessionState == SessionState.CONNECTING -> Brush.radialGradient(
                         colors = listOf(
                             Color(0xFFF59E0B).copy(alpha = 0.3f),
                             Color(0xFFD97706).copy(alpha = 0.2f),
@@ -380,9 +360,9 @@ fun GeminiLiveVoiceOverlay(
                 waveRotation = waveRotation,
                 onToggleListening = { 
                     if (isListening) {
-                        firebaseLiveSessionManager.stopListening()
+                        liveSessionManager.stopAudioInput()
                     } else {
-                        firebaseLiveSessionManager.startListening()
+                        liveSessionManager.startAudioInput()
                     }
                 },
                 modifier = Modifier.weight(1f)
@@ -400,10 +380,10 @@ fun GeminiLiveVoiceOverlay(
             }
             
             // Agent welcome message when idle
-            if (firebaseSessionState == FirebaseSessionState.DISCONNECTED && currentTranscription.isEmpty()) {
+            if (sessionState == SessionState.DISCONNECTED && currentTranscription.isEmpty()) {
                 VoiceWelcomeMessage(
                     agent = selectedAgent,
-                    onStartSession = { startFirebaseLiveSession() },
+                    onStartSession = { startLiveAudioSession() },
                     modifier = Modifier.padding(vertical = 24.dp)
                 )
             }
@@ -417,17 +397,16 @@ fun GeminiLiveVoiceOverlay(
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             GeminiLiveVoiceControls(
-                firebaseSessionState = firebaseSessionState,
-                isListening = firebaseIsListening,
+                sessionState = sessionState,
+                isListening = isListening,
                 isMicEnabled = isMicEnabled,
-                onToggleListening = { toggleFirebaseListening() },
-                onToggleMic = { isMicEnabled = !isMicEnabled },
+                onToggleListening = { toggleAudioSession() },
+                onToggleMic = { toggleMicrophone() },
                 onSwitchToVideo = onSwitchToVideo,
                 onEndSession = { 
-                    when (firebaseSessionState) {
-                        FirebaseSessionState.CONNECTED, 
-                        FirebaseSessionState.LISTENING,
-                        FirebaseSessionState.SPEAKING -> stopFirebaseLiveSession()
+                    when (sessionState) {
+                        SessionState.CONNECTED, 
+                        SessionState.CONNECTING -> stopLiveAudioSession()
                         else -> onClose()
                     }
                 },
@@ -937,7 +916,7 @@ private fun VoiceWelcomeMessage(
 
 @Composable
 private fun GeminiLiveVoiceControls(
-    firebaseSessionState: FirebaseSessionState,
+    sessionState: SessionState,
     isListening: Boolean,
     isMicEnabled: Boolean,
     onToggleListening: () -> Unit,
@@ -969,33 +948,33 @@ private fun GeminiLiveVoiceControls(
                 color = if (isMicEnabled) Color(0xFF10B981) else Color.Red,
                 onClick = onToggleMic,
                 label = if (isMicEnabled) "Mic On" else "Muted",
-                enabled = firebaseSessionState == FirebaseSessionState.CONNECTED
+                enabled = sessionState == SessionState.CONNECTED
             )
             
             // Main listening toggle
             GeminiLiveControlButton(
-                icon = when (firebaseSessionState) {
-                    FirebaseSessionState.CONNECTED -> 
+                icon = when (sessionState) {
+                    SessionState.CONNECTED -> 
                         if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic
-                    FirebaseSessionState.CONNECTING -> Icons.Rounded.HourglassEmpty
+                    SessionState.CONNECTING -> Icons.Rounded.HourglassEmpty
                     else -> Icons.Rounded.PlayArrow
                 },
                 isActive = isListening,
-                color = when (firebaseSessionState) {
-                    FirebaseSessionState.CONNECTED -> selectedAgent.primaryColor
-                    FirebaseSessionState.CONNECTING -> Color(0xFFF59E0B)
-                    FirebaseSessionState.ERROR -> Color.Red
+                color = when (sessionState) {
+                    SessionState.CONNECTED -> selectedAgent.primaryColor
+                    SessionState.CONNECTING -> Color(0xFFF59E0B)
+                    SessionState.DISCONNECTING -> Color.Red
                     else -> selectedAgent.primaryColor.copy(alpha = 0.6f)
                 },
                 onClick = onToggleListening,
-                label = when (firebaseSessionState) {
-                    FirebaseSessionState.CONNECTED -> if (isListening) "Stop" else "Listen"
-                    FirebaseSessionState.CONNECTING -> "Connecting..."
-                    FirebaseSessionState.ERROR -> "Retry"
+                label = when (sessionState) {
+                    SessionState.CONNECTED -> if (isListening) "Stop" else "Listen"
+                    SessionState.CONNECTING -> "Connecting..."
+                    SessionState.DISCONNECTING -> "Retry"
                     else -> "Start"
                 },
                 size = 64.dp,
-                enabled = firebaseSessionState != FirebaseSessionState.CONNECTING
+                enabled = sessionState != SessionState.CONNECTING
             )
             
             // Video mode
@@ -1005,7 +984,7 @@ private fun GeminiLiveVoiceControls(
                 color = Color(0xFF2196F3),
                 onClick = onSwitchToVideo,
                 label = "Video",
-                enabled = firebaseSessionState == FirebaseSessionState.CONNECTED
+                enabled = sessionState == SessionState.CONNECTED
             )
             
             // End session

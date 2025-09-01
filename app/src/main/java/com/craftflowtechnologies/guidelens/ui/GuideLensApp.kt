@@ -65,7 +65,7 @@ import java.util.UUID
 private fun Recipe.toArtifact(userId: String): Artifact {
     return Artifact(
         id = this.id,
-        type = ArtifactType.RECIPE,
+        type = com.craftflowtechnologies.guidelens.storage.ArtifactType.RECIPE,
         title = this.title,
         description = this.description,
         agentType = "cooking",
@@ -1283,6 +1283,8 @@ private fun MainAppContent(
         }
     }
 }
+
+
 
 /**
  * Generate a personalized welcome message based on the selected agent

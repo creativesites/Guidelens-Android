@@ -102,11 +102,14 @@ fun GeminiVideoCallOverlay(
     // Enhanced state management for Gemini Live
     var isVideoEnabled by rememberSaveable { mutableStateOf(true) }
     var isMicEnabled by rememberSaveable { mutableStateOf(true) }
-    var isRecording by rememberSaveable { mutableStateOf(false) }
     var showControls by rememberSaveable { mutableStateOf(true) }
     var currentAnalysisMode by rememberSaveable { mutableStateOf(AnalysisMode.REAL_TIME) }
     var videoQuality by rememberSaveable { mutableStateOf(VideoQuality.HD) }
     var audioQuality by rememberSaveable { mutableStateOf(AudioQuality.HIGH) }
+    
+    // Enhanced audio state management
+    var isUserSpeaking by remember { mutableStateOf(false) }
+    var currentVoiceActivityLevel by remember { mutableStateOf(0f) }
 
     // Live session state from the manager
     val sessionState by liveSessionManager.sessionState.collectAsState()
@@ -117,6 +120,12 @@ fun GeminiVideoCallOverlay(
     val emotionalContext by liveSessionManager.emotionalContext.collectAsState()
     val isProcessingFrame by liveSessionManager.isProcessing.collectAsState()
     val frameProcessingQueue by liveSessionManager.processingQueue.collectAsState()
+    
+    // Enhanced audio state integration
+    val audioLevel by liveSessionManager.audioLevel.collectAsState()
+    val isRecording by liveSessionManager.isRecording.collectAsState()
+    val isPlayingAudio by liveSessionManager.isPlayingAudio.collectAsState()
+    val audioChunks by liveSessionManager.audioChunks.collectAsState(initial = byteArrayOf())
 
     // Camera and recording enhanced state
     var currentCameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_FRONT_CAMERA) }
@@ -192,12 +201,37 @@ fun GeminiVideoCallOverlay(
         }
     }
 
-    // Real-time audio level simulation for visualization
-    LaunchedEffect(isListening || isSpeaking) {
-        while (isListening || isSpeaking) {
-            currentAudioLevel = voiceActivityLevel + (Math.random().toFloat() * 0.3f - 0.15f)
-            currentAudioLevel = currentAudioLevel.coerceIn(0f, 1f)
+    // Enhanced real-time audio level tracking
+    LaunchedEffect(audioLevel, isRecording, isPlayingAudio) {
+        while (isLiveSessionActive) {
+            // Use actual audio level from session manager
+            currentAudioLevel = if (isRecording) {
+                audioLevel.coerceIn(0f, 1f)
+            } else if (isPlayingAudio) {
+                // Simulate AI speaking level
+                (audioLevel * 1.2f).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            
+            // Update speaking states based on actual audio activity
+            isUserSpeaking = isRecording && audioLevel > 0.1f
+            currentVoiceActivityLevel = audioLevel
+            
             delay(50) // 20 FPS for smooth animation
+        }
+    }
+    
+    // Enhanced voice activity detection
+    LaunchedEffect(isUserSpeaking, isPlayingAudio, isLiveSessionActive) {
+        if (isLiveSessionActive && isMicEnabled) {
+            if (!isPlayingAudio && !isUserSpeaking && !isRecording) {
+                // Automatically start recording when session is active and not playing
+                liveSessionManager.startAudioInput()
+            } else if (isPlayingAudio && isRecording) {
+                // Stop recording while AI is speaking
+                liveSessionManager.stopAudioInput()
+            }
         }
     }
 
@@ -389,8 +423,8 @@ fun GeminiVideoCallOverlay(
                 duration = recordingDuration,
                 quality = connectionQuality,
                 audioLevel = currentAudioLevel,
-                isListening = isListening,
-                isSpeaking = isSpeaking,
+                isListening = isRecording && isMicEnabled,
+                isSpeaking = isPlayingAudio,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(20.dp)
@@ -407,8 +441,8 @@ fun GeminiVideoCallOverlay(
             ModernAgentCard(
                 agent = selectedAgent,
                 sessionState = sessionState,
-                isListening = isListening,
-                isSpeaking = isSpeaking,
+                isListening = isRecording && isMicEnabled,
+                isSpeaking = isPlayingAudio,
                 analysisMode = currentAnalysisMode,
                 modifier = Modifier.padding(16.dp)
             )
@@ -462,6 +496,7 @@ fun GeminiVideoCallOverlay(
                 isProcessing = isProcessingFrame,
                 videoQuality = videoQuality,
                 audioQuality = audioQuality,
+                audioLevel = audioLevel,
                 onVideoToggle = {
                     isVideoEnabled = !isVideoEnabled
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -469,6 +504,14 @@ fun GeminiVideoCallOverlay(
                 onMicToggle = {
                     isMicEnabled = !isMicEnabled
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    
+                    if (isLiveSessionActive) {
+                        if (isMicEnabled) {
+                            liveSessionManager.startAudioInput()
+                        } else {
+                            liveSessionManager.stopAudioInput()
+                        }
+                    }
                 },
                 onSessionToggle = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -480,7 +523,15 @@ fun GeminiVideoCallOverlay(
                 },
                 onSwitchCamera = { switchCamera() },
                 onClose = onClose,
-                onCaptureFrame = { captureAnalysisFrame() },
+                onCaptureFrame = {
+                    if (!isProcessingFrame && isLiveSessionActive) {
+                        liveSessionManager.captureAndAnalyzeFrame(imageCapture)
+                        
+                        // Send contextual prompt based on analysis mode
+                        val contextPrompt = buildAnalysisPrompt(currentAnalysisMode, selectedAgent)
+                        liveSessionManager.sendTextMessage(contextPrompt)
+                    }
+                },
                 onQualitySettings = {
                     // TODO: Implement quality settings dialog
                 },
@@ -513,6 +564,7 @@ private fun GeminiLiveControls(
     isProcessing: Boolean,
     videoQuality: VideoQuality,
     audioQuality: AudioQuality,
+    audioLevel: Float,
     onVideoToggle: () -> Unit,
     onMicToggle: () -> Unit,
     onSessionToggle: () -> Unit,
@@ -560,13 +612,28 @@ private fun GeminiLiveControls(
                     isEnabled = !isProcessing
                 )
 
-                // Microphone
+                // Enhanced microphone with real-time audio feedback
                 ModernControlButton(
-                    icon = if (isMicEnabled) Icons.Rounded.Mic else Icons.Rounded.MicOff,
-                    isActive = isMicEnabled && (isListening || isSpeaking),
-                    color = selectedAgent.primaryColor,
+                    icon = when {
+                        !isMicEnabled -> Icons.Rounded.MicOff
+                        isListening && audioLevel > 0.1f -> Icons.Rounded.MicNone
+                        isListening -> Icons.Rounded.Mic
+                        else -> Icons.Rounded.MicOff
+                    },
+                    isActive = isMicEnabled && isListening,
+                    color = when {
+                        !isMicEnabled -> Color.Gray
+                        isListening && audioLevel > 0.3f -> Color(0xFF4CAF50) // Green when speaking
+                        isListening -> selectedAgent.primaryColor
+                        else -> Color.Gray
+                    },
                     onClick = onMicToggle,
-                    label = if (isMicEnabled) "Mic" else "Muted"
+                    label = when {
+                        !isMicEnabled -> "Muted"
+                        isListening && audioLevel > 0.1f -> "Speaking"
+                        isListening -> "Listening"
+                        else -> "Mic Off"
+                    }
                 )
 
                 // Live session (main button)
@@ -1448,20 +1515,24 @@ private fun captureFrameForAnalysis(
     }
 }
 
-private fun buildAnalysisPrompt(mode: AnalysisMode): String {
-    return when (mode) {
-        AnalysisMode.REAL_TIME -> "Analyze this video frame in real-time and provide immediate feedback on what you see. Focus on the current action and any guidance needed."
-
-        AnalysisMode.STEP_BY_STEP -> "Break down this step in detail. Explain exactly what should be happening, what comes next, and provide specific step-by-step guidance."
-
-        AnalysisMode.SAFETY_FOCUS -> "Focus on safety in this frame. Identify potential safety concerns, proper safety equipment usage, and safety best practices."
-
-        AnalysisMode.TECHNIQUE -> "Analyze the technique shown. Provide detailed feedback on form, posture, positioning, and suggest improvements."
-
-        AnalysisMode.TROUBLESHOOT -> "Act as a troubleshooting expert. Identify any problems, mistakes, or issues and provide specific solutions."
-
-        AnalysisMode.LEARNING -> "Provide educational explanations about what's happening in this frame. Focus on learning and understanding."
-
-        AnalysisMode.CREATIVE -> "Provide creative and artistic guidance based on what you see. Focus on aesthetics, composition, and creative expression."
+private fun buildAnalysisPrompt(mode: AnalysisMode, agent: Agent): String {
+    val agentContext = when (agent.id) {
+        "cooking" -> "You are an expert cooking instructor analyzing a cooking video frame."
+        "crafting" -> "You are a master craftsperson analyzing a craft project video frame."
+        "diy" -> "You are an experienced DIY expert analyzing a home improvement/repair video frame."
+        "buddy" -> "You are a friendly learning assistant analyzing an educational video frame."
+        else -> "You are an AI assistant analyzing this video frame."
     }
+    
+    val modePrompt = when (mode) {
+        AnalysisMode.REAL_TIME -> "Provide immediate, actionable feedback on what you see. Keep responses under 2 sentences for real-time guidance."
+        AnalysisMode.STEP_BY_STEP -> "Break down the current step in detail. Explain what's happening now, what should happen next, and provide specific guidance."
+        AnalysisMode.SAFETY_FOCUS -> "Focus on safety considerations. Identify potential risks, proper safety equipment usage, and safety best practices."
+        AnalysisMode.TECHNIQUE -> "Analyze the technique being demonstrated. Provide specific feedback on form, positioning, and suggest improvements."
+        AnalysisMode.TROUBLESHOOT -> "Act as a troubleshooting expert. Identify any problems or mistakes you see and provide specific solutions."
+        AnalysisMode.LEARNING -> "Provide educational explanations about what's happening. Focus on helping the user understand the process."
+        AnalysisMode.CREATIVE -> "Provide creative guidance focusing on aesthetics, composition, and creative expression."
+    }
+    
+    return "$agentContext $modePrompt Respond naturally and conversationally as if speaking to them in real-time."
 }
